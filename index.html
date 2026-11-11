@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Licznik podciągnięć</title>
+<style>
+:root{--bg:#0F151B;--ink:#E7ECF1;--muted:#93A1AF;--accent:#74A2FF;--warn:#F0A064;--panel:rgba(15,21,27,.78)}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+#stage{position:fixed;inset:0}
+video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.mirror{transform:scaleX(-1)}
+#hud{position:fixed;top:env(safe-area-inset-top,0);left:0;right:0;padding:12px 16px;display:flex;flex-direction:column;align-items:center;gap:4px;background:linear-gradient(var(--panel),transparent);text-align:center}
+#count{font:700 120px/0.95 "Arial Narrow",Arial,sans-serif;font-variant-numeric:tabular-nums}
+#status{font-size:17px;font-weight:600}
+#fault{font-size:15px;color:var(--warn);min-height:20px}
+#bar{position:fixed;left:0;right:0;bottom:0;padding:12px 16px calc(12px + env(safe-area-inset-bottom,0));display:flex;gap:8px;background:var(--panel)}
+button{flex:1;min-height:52px;border-radius:12px;border:1px solid #2B3744;background:#19222C;color:var(--ink);font:600 16px system-ui,sans-serif}
+button.primary{background:var(--accent);color:#0B1420;border-color:var(--accent)}
+button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+#intro{position:fixed;inset:0;display:flex;flex-direction:column;justify-content:center;gap:12px;padding:24px;max-width:460px;margin:0 auto}
+#intro h1{margin:0;font-size:30px}
+#intro p,#intro li{color:var(--muted);font-size:15px;line-height:1.45;margin:0}
+#intro ol{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div id="stage"><video id="v" playsinline muted class="mirror"></video><canvas id="c" class="mirror"></canvas></div>
+<div id="hud" hidden><div id="count">0</div><div id="status"></div><div id="fault"></div></div>
+<div id="intro">
+  <h1>Licznik podciągnięć</h1>
+  <p>Liczy tylko czyste powtórzenia: start z wyprostowanych rąk i broda nad linią dłoni.</p>
+  <ol>
+    <li>Oprzyj telefon 2–3 metry od drążka, na wysokości pasa, ekranem do siebie.</li>
+    <li>W kadrze muszą być głowa, barki, łokcie i dłonie na drążku.</li>
+    <li>Zadbaj o światło z przodu, a nie zza pleców.</li>
+  </ol>
+  <p id="err" style="color:var(--warn)"></p>
+</div>
+<div id="bar">
+  <button id="start" class="primary">Włącz kamerę</button>
+  <button id="flip" hidden>Obróć kamerę</button>
+  <button id="reset" hidden>Zeruj</button>
+</div>
+<script src="counter.js"></script>
+<script type="module">
+import {PoseLandmarker,FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+const $=id=>document.getElementById(id),v=$('v'),c=$('c'),ctx=c.getContext('2d');
+let pose=null,stream=null,facing='user',state=PullCounter.create(),audio=null,lastT=-1;
+window.__loadModel=loadModel; // do sprawdzenia bez kamery
+async function loadModel(){
+  if(pose)return pose;
+  const fs=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  const opt=d=>({baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",delegate:d},runningMode:"VIDEO",numPoses:1});
+  try{pose=await PoseLandmarker.createFromOptions(fs,opt("GPU"));}catch(e){pose=await PoseLandmarker.createFromOptions(fs,opt("CPU"));}
+  return pose;
+}
+function beep(f,d){try{audio=audio||new (window.AudioContext||window.webkitAudioContext)();const o=audio.createOscillator(),g=audio.createGain();
+  o.frequency.value=f;g.gain.value=.2;o.connect(g);g.connect(audio.destination);o.start();o.stop(audio.currentTime+d);}catch(e){}}
+function say(n){try{const u=new SpeechSynthesisUtterance(String(n));u.lang='pl-PL';speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+async function openCamera(){
+  if(stream)stream.getTracks().forEach(t=>t.stop());
+  stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:facing,width:{ideal:720},height:{ideal:1280}}});
+  v.srcObject=stream;await v.play();
+  v.classList.toggle('mirror',facing==='user');c.classList.toggle('mirror',facing==='user');
+}
+function draw(lm){
+  c.width=v.videoWidth;c.height=v.videoHeight;ctx.clearRect(0,0,c.width,c.height);
+  if(!lm)return;
+  ctx.lineWidth=Math.max(4,c.width/120);ctx.lineCap='round';ctx.strokeStyle=state.ok?'#74A2FF':'#93A1AF';
+  [[15,13],[13,11],[11,12],[12,14],[14,16]].forEach(([a,b])=>{ctx.beginPath();ctx.moveTo(lm[a].x*c.width,lm[a].y*c.height);ctx.lineTo(lm[b].x*c.width,lm[b].y*c.height);ctx.stroke();});
+  const wy=(lm[15].y+lm[16].y)/2*c.height;ctx.strokeStyle='#F0A064';ctx.setLineDash([12,10]);ctx.beginPath();ctx.moveTo(0,wy);ctx.lineTo(c.width,wy);ctx.stroke();ctx.setLineDash([]);
+}
+function loop(){
+  if(!stream)return;
+  if(v.readyState>=2&&v.currentTime!==lastT){
+    lastT=v.currentTime;
+    const r=pose.detectForVideo(v,performance.now()),lm=r.landmarks&&r.landmarks[0];
+    PullCounter.step(state,lm,v.videoWidth/v.videoHeight);
+    if(state.ev==='rep'){beep(990,.15);say(state.count);}
+    if(state.ev==='fault')beep(220,.35);
+    $('count').textContent=state.count;$('status').textContent=state.msg;$('fault').textContent=state.fault;
+    draw(lm);
+  }
+  requestAnimationFrame(loop);
+}
+$('start').onclick=async()=>{
+  $('start').disabled=true;$('start').textContent='Ładuję model…';$('err').textContent='';
+  try{
+    beep(1,.01); // odblokowanie dźwięku na iOS w reakcji na dotknięcie
+    await Promise.all([loadModel(),openCamera()]);
+    $('intro').hidden=true;$('hud').hidden=false;$('start').hidden=true;$('flip').hidden=false;$('reset').hidden=false;
+    try{navigator.wakeLock&&navigator.wakeLock.request('screen').catch(()=>{});}catch(e){}
+    loop();
+  }catch(e){
+    $('start').disabled=false;$('start').textContent='Włącz kamerę';
+    $('err').textContent=e&&e.name==='NotAllowedError'?'Brak zgody na kamerę. Zezwól na dostęp w ustawieniach przeglądarki.'
+      :location.protocol!=='https:'&&location.hostname!=='localhost'?'Kamera działa tylko na stronie z adresem https.'
+      :'Nie udało się uruchomić: '+(e&&e.message||e);
+  }
+};
+$('flip').onclick=async()=>{facing=facing==='user'?'environment':'user';try{await openCamera();}catch(e){}};
+$('reset').onclick=()=>{state=PullCounter.create();$('count').textContent='0';$('fault').textContent='';};
+</script>
+</body>
+</html>
